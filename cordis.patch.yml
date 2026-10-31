@@ -2,5 +2,5 @@
 # above the composer and the page in Settings all ship as this single plugin.
 - insert:
     - id: dont-stop
-      name: '@local/dsh-dont-stop'
+      name: 'dsh-dont-stop'
       config: {}

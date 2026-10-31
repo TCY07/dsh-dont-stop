@@ -10,7 +10,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: '@local/dsh-dont-stop',
+  id: 'dsh-dont-stop',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -693,7 +693,7 @@ window.__ModuleLoader__.load({
         if (typeof ctx.locale.bind === 'function') translate = ctx.locale.bind(NS)
         ctx.effect(() => {
           const tag = document.createElement('style')
-          tag.dataset.plugin = '@local/dsh-dont-stop'
+          tag.dataset.plugin = 'dsh-dont-stop'
           tag.textContent = CSS
           document.head.appendChild(tag)
           return () => {

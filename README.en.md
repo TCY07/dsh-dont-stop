@@ -31,6 +31,12 @@
 
 ![Automatic error recovery](docs/images/error-recovery.png)
 
+## Install
+
+- **In DSH**: Settings → Plugins → Add plugin, and enter `dsh-dont-stop`. The same dialog also accepts the GitHub repository (`TCY07/dsh-dont-stop`) or a local directory path.
+- **CLI**: `dsh plugin --profile <profile> add dsh-dont-stop`
+- **Uninstall**: remove it on the plugin page, or `dsh plugin --profile <profile> remove dsh-dont-stop`
+
 ## Quick start
 
 | Command | What it does |

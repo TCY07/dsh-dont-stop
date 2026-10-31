@@ -202,7 +202,7 @@ function makeHookReact() {
 
 test('the client module is registered under the package name', () => {
   const { definition } = loadClient()
-  assert.equal(definition.id, '@local/dsh-dont-stop')
+  assert.equal(definition.id, 'dsh-dont-stop')
 })
 
 test('the client module declares the remote service it calls', () => {

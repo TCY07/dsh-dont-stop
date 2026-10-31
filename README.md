@@ -31,6 +31,12 @@
 
 ![错误自动恢复](docs/images/error-recovery.png)
 
+## 安装
+
+- **在 DSH 里装**：设置 → 插件 → 添加插件，填 `dsh-dont-stop`。同一个入口也接受 GitHub 仓库地址 `TCY07/dsh-dont-stop` 和本地目录路径。
+- **命令行**：`dsh plugin --profile <profile> add dsh-dont-stop`
+- **卸载**：在插件页移除，或 `dsh plugin --profile <profile> remove dsh-dont-stop`
+
 ## 快速上手
 
 | 命令 | 效果 |

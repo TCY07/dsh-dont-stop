@@ -1,10 +1,17 @@
 {
-  "name": "@local/dsh-dont-stop",
+  "name": "dsh-dont-stop",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "license": "MIT",
   "description": "Keep a DeepSeek Harness session working until a deadline: autonomous rounds, classified error recovery, a composer status bar and a settings page.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TCY07/dsh-dont-stop.git"
+  },
+  "homepage": "https://github.com/TCY07/dsh-dont-stop#readme",
+  "bugs": {
+    "url": "https://github.com/TCY07/dsh-dont-stop/issues"
+  },
   "scripts": {
     "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\""
   },
