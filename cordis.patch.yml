@@ -1,0 +1,6 @@
+# One plugin row: Dont-Stop, classified error recovery, the status bar
+# above the composer and the page in Settings all ship as this single plugin.
+- insert:
+    - id: dont-stop
+      name: '@local/dsh-dont-stop'
+      config: {}

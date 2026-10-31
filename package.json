@@ -1,0 +1,60 @@
+{
+  "name": "@local/dsh-dont-stop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Keep a DeepSeek Harness session working until a deadline: autonomous rounds, classified error recovery, a composer status bar and a settings page.",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "agent",
+    "automation",
+    "autonomous",
+    "deadline",
+    "supervision",
+    "retry"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./core/icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "prompts.json",
+    "core/index.js",
+    "core/projection.js",
+    "core/prompts.js",
+    "core/settings.js",
+    "retry/index.js",
+    "retry/prompts.js",
+    "shared/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "core/icon.svg",
+    "docs/images/*.png",
+    "LICENSE",
+    "README.md",
+    "README.en.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

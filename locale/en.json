@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Dont-Stop",
+    "description": "Keeps the agent working continuously until the set deadline; if it ends the task early, Dont-Stop nudges it to keep iterating and take on the next step on its own."
+  }
+}
