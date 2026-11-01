@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test, { after } from 'node:test'
 
 import { apply } from '../core/index.js'
 import { dontStopProjection } from '../core/projection.js'
 import { userMessage } from '../shared/message.js'
 import { makeFakeAgent, makeFakeContext, makeFakeProjections } from './fake-ctx.mjs'
+
+// core 会从 DSH_HOME 读设置文件：给测试一个独立目录，别读本机的真实设置，跑完删掉。
+const TEST_HOME = mkdtempSync(join(tmpdir(), 'dsh-dont-stop-projection-home-'))
+process.env.DSH_HOME = TEST_HOME
+after(() => rmSync(TEST_HOME, { recursive: true, force: true }))
 
 const KEY = 'dontStop'
 

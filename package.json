@@ -1,9 +1,9 @@
 {
   "name": "dsh-dont-stop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
-  "description": "Keep a DeepSeek Harness session working until a deadline: autonomous rounds, classified error recovery, a composer status bar and a settings page.",
+  "description": "Keeps an agent working continuously over long stretches: set a deadline, and if it finishes the task early, Dont-Stop automatically nudges it to keep iterating and take on the next step on its own.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/TCY07/dsh-dont-stop.git"
@@ -24,7 +24,9 @@
     "autonomous",
     "deadline",
     "supervision",
-    "retry"
+    "retry",
+    "keep-awake",
+    "power-management"
   ],
   "exports": {
     ".": "./index.js",
@@ -41,6 +43,7 @@
     "core/projection.js",
     "core/prompts.js",
     "core/settings.js",
+    "power/*.js",
     "retry/index.js",
     "retry/prompts.js",
     "shared/*.js",

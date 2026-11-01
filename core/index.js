@@ -22,7 +22,9 @@ import { DEFAULT_DURATION_MS, MAX_DURATION_MS, USAGE, parseSpec } from '../share
 import { userMessage } from '../shared/message.js'
 import {
   dropSupervision,
+  inResumeGrace,
   listRecoveries,
+  markResume,
   recoveryControlOf,
   recoveryStatusOf,
   setResumeRoundHook,
@@ -68,10 +70,16 @@ const DRIVER_RECHECK_MS = 60000
 /** 恢复等待的只读接口：请求级重试不落会话事件，状态条轮询它显示“恢复中”。 */
 const RECOVERY_ROUTE_PATH = '/dsh-dont-stop/recovery'
 
+/** 保持唤醒状态的只读接口：设置页用它显示当前由谁在阻止系统睡眠。 */
+const POWER_ROUTE_PATH = '/dsh-dont-stop/power'
+
+/** 系统恢复后的宽限期：这段时间里的失败是“被打断”，不是真的失败。 */
+const RESUME_GRACE_MS = 10000
+
 /**
  * @param {object} ctx - 插件上下文。
  * @param {object} [config] - 这一行的配置。
- * @param {{settings?: ReturnType<typeof import('./settings.js').createSettingsStore>}} [options] - 与同一行的其他模块共用的设置存储。
+ * @param {{settings?: ReturnType<typeof import('./settings.js').createSettingsStore>, power?: ReturnType<typeof import('../power/index.js').createKeepAwake>}} [options] - 与同一行的其他模块共用的设置存储与保持唤醒服务。
  */
 export function apply(ctx, config = {}, options = {}) {
   const cfg = mergeConfig(mergeConfig({}, DEFAULTS), config)
@@ -82,6 +90,8 @@ export function apply(ctx, config = {}, options = {}) {
   const settings = options.settings ?? createSettingsStore({
     onError: (error) => logWarn(ctx, `could not save the plugin settings: ${errorText(error)}`),
   })
+  // 保持唤醒由包根入口创建并挂好生命周期，这里只负责在监督开始/结束时登记所有权。
+  const power = options.power
   const states = new Map()
 
   function goalsService() {
@@ -118,6 +128,23 @@ export function apply(ctx, config = {}, options = {}) {
 
   function publish(state) {
     setSupervision(state.agent.id, state)
+  }
+
+  /** 保持唤醒的登记失败不能影响监督本身：只记一条日志。 */
+  function powerHold(sessionId) {
+    try {
+      power?.hold?.(sessionId)
+    } catch (error) {
+      logWarn(ctx, `could not hold the wake lock: ${errorText(error)}`)
+    }
+  }
+
+  function powerRelease(sessionId) {
+    try {
+      power?.release?.(sessionId)
+    } catch (error) {
+      logWarn(ctx, `could not release the wake lock: ${errorText(error)}`)
+    }
   }
 
   /** 恢复等待期间被临时停掉的官方续轮；目标已经不在 active 时什么也不做。 */
@@ -610,6 +637,7 @@ export function apply(ctx, config = {}, options = {}) {
     if (states.get(state.agent) !== state) return
     states.delete(state.agent)
     dropSupervision(state.agent.id)
+    powerRelease(state.agent.id)
     clearDeadlineTimer(state)
     clearHardTimer(state)
     clearHumanTimer(state)
@@ -668,6 +696,7 @@ export function apply(ctx, config = {}, options = {}) {
     }
     states.set(agent, state)
     publish(state)
+    powerHold(agent.id)
     injectNotice(agent, supervisionNotice(state, {
       waitTool: cfg.wait.enabled && settings.get().waitTool,
       stopAtDeadline: state.stopAtDeadline ?? settings.get().stopAtDeadline,
@@ -766,6 +795,39 @@ export function apply(ctx, config = {}, options = {}) {
     }
   }
 
+  /**
+   * 系统从睡眠里恢复：定时器在挂起期间被冻结，醒来后不能沿用旧的排期。
+   *  - 已经过了截止时间：立刻走收尾；
+   *  - 还在监督中：清掉旧排期与错误退避，立即补一轮；
+   *  - 等外部事情的等待：时间已经过了就直接结束等待。
+   */
+  function onSystemResume(info) {
+    try {
+      markResume(RESUME_GRACE_MS)
+      const stamp = Date.now()
+      for (const state of [...states.values()]) {
+        if (state.mode !== 'supervising') continue
+        clearRoundTimer(state)
+        if (state.waiting !== undefined && stamp >= state.waiting.wakeAt) {
+          endWait(state, 'resume')
+          continue
+        }
+        if (stamp >= state.deadlineAt) {
+          beginFinish(state, 'deadline')
+          continue
+        }
+        state.nextRoundAt = 0
+        state.errorStreak = 0
+        // 正在等错误恢复时由 retry 自己叫醒这一轮，别在这里补出第二轮回。
+        if (recoveryStatusOf(state.agent.id) !== undefined) continue
+        scheduleRound(state, 1)
+      }
+      logInfo(ctx, `system resumed after ${Math.round((info?.suspendedMs ?? 0) / 1000)}s suspended; supervision timers re-armed`)
+    } catch (error) {
+      logWarn(ctx, `resume handling failed: ${errorText(error)}`)
+    }
+  }
+
   function onDisposed({ agent }) {
     clearQuestionWait(agent)
     const state = states.get(agent)
@@ -775,6 +837,12 @@ export function apply(ctx, config = {}, options = {}) {
   function onAgentError({ agent }) {
     const state = states.get(agent)
     if (!state || state.mode !== 'supervising') return
+    // 挂起打断了这一轮：错误不是真的失败，别让退避把后续轮次拖长。
+    if (inResumeGrace()) {
+      state.nextRoundAt = 0
+      logInfo(ctx, 'the failure overlapped a system suspend; it is not counted as a failed round')
+      return
+    }
     state.errorStreak += 1
     const delayMs = Math.min(ERROR_BACKOFF_BASE_MS * 2 ** (state.errorStreak - 1), ERROR_BACKOFF_MAX_MS)
     state.nextRoundAt = Date.now() + delayMs
@@ -1025,6 +1093,35 @@ export function apply(ctx, config = {}, options = {}) {
   }
 
   /**
+   * 保持唤醒状态的只读接口：设置页显示当前后端、电源来源与降级原因。
+   * 没有接 power 服务时（例如只挂 core 的测试）返回一个中性的空状态。
+   */
+  function registerPowerRoute(webServer) {
+    if (!webServer || typeof webServer.register !== 'function') return () => {}
+    const handle = (_request, response) => {
+      let value
+      try {
+        value = power?.diagnose?.() ?? { mode: 'off', holding: false, backend: 'none', reason: 'disabled' }
+      } catch (error) {
+        value = { mode: 'off', holding: false, backend: 'none', reason: 'failed', detail: errorText(error) }
+      }
+      const body = JSON.stringify({ ok: true, value })
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-length': Buffer.byteLength(body),
+      })
+      response.end(body)
+    }
+    try {
+      return webServer.register({ kind: 'exact', path: POWER_ROUTE_PATH, handler: handle })
+    } catch (error) {
+      logWarn(ctx, `could not register the power endpoint: ${errorText(error)}`)
+      return () => {}
+    }
+  }
+
+  /**
    * dont_stop_wait 随插件常驻注册：监督中生效，其余时候返回 not-supervised。
    * 设置页关掉它就当场注销，打开就当场注册，不用重载插件行。
    */
@@ -1077,6 +1174,17 @@ export function apply(ctx, config = {}, options = {}) {
     const releaseRecoveryRoute = ctx.inject(['webServer'], (scoped) => {
       scoped.effect(() => registerRecoveryRoute(scoped, scoped.webServer))
     })
+    // 保持唤醒状态的只读接口：设置页显示当前由谁在阻止系统睡眠。
+    const releasePowerRoute = ctx.inject(['webServer'], (scoped) => {
+      scoped.effect(() => registerPowerRoute(scoped.webServer))
+    })
+    // 系统从睡眠里恢复：重算监督的定时器，并给被打断的回合留一段免计失败的窗口。
+    let releaseResume = () => {}
+    try {
+      releaseResume = power?.onResume?.(onSystemResume) ?? (() => {})
+    } catch (error) {
+      logWarn(ctx, `could not subscribe to system resume events: ${errorText(error)}`)
+    }
     // retry 的两个动作入口：恢复到点替它打下一轮；放弃重试时连监督一起结束。
     const releaseResumeHook = setResumeRoundHook((sessionId) => {
       for (const state of states.values()) {
@@ -1120,6 +1228,8 @@ export function apply(ctx, config = {}, options = {}) {
       }
       releaseSettingsRoute()
       releaseRecoveryRoute()
+      releasePowerRoute()
+      releaseResume()
       releaseResumeHook()
       releaseStopHook()
       for (const dispose of disposers.splice(0)) {
@@ -1140,6 +1250,7 @@ export function apply(ctx, config = {}, options = {}) {
         else if (state.waitStoppedDriver === true) resumeDriver(state)
         states.delete(state.agent)
         dropSupervision(state.agent.id)
+        powerRelease(state.agent.id)
       }
       for (const agent of [...questionWaits.keys()]) clearQuestionWait(agent)
     }

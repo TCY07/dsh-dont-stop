@@ -3,7 +3,7 @@ import { Readable } from 'node:stream'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { apply } from '../core/index.js'
@@ -11,9 +11,10 @@ import { roundPrompt, supervisionNotice } from '../core/prompts.js'
 import { clearAllRecoveries, clearRecoveryControl, clearRecoveryStatus, getSupervision, setRecoveryControl, setRecoveryStatus } from '../shared/state.js'
 import { makeFakeAgent, makeFakeContext, makeFakeGoals, makeFakeJobs, makeFakeSubagents, tick } from './fake-ctx.mjs'
 
-// 插件从 DSH_HOME 下读设置文件；测试用独立目录，避免读到本机的真实设置。
+// 插件从 DSH_HOME 下读设置文件；测试用独立目录，避免读到本机的真实设置，跑完删掉。
 const TEST_HOME = mkdtempSync(join(tmpdir(), 'dsh-dont-stop-home-'))
 process.env.DSH_HOME = TEST_HOME
+after(() => rmSync(TEST_HOME, { recursive: true, force: true }))
 
 function settingsFile() {
   return join(TEST_HOME, 'storages', 'dont-stop', 'settings.json')

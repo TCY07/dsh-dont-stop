@@ -28,6 +28,7 @@ import {
   clearRecoveryControl,
   clearRecoveryStatus,
   getSupervision,
+  inResumeGrace,
   requestResumeRound,
   requestStopSupervision,
   setRecoveryControl,
@@ -78,6 +79,8 @@ export function apply(ctx, config = {}, options = {}) {
 
   // 直接挂载这个模块（没有同一行的其他模块）时自己开一个存储，读的是同一个设置文件。
   const settings = options.settings ?? createSettingsStore()
+  // 系统挂起/恢复的事件源；没有接入时这段逻辑自然跳过。
+  const power = options.power
 
   /** 设置页关掉“报错恢复”后，退回普通失败处理。 */
   function recoveryEnabled() {
@@ -255,6 +258,7 @@ export function apply(ctx, config = {}, options = {}) {
     clearTimers(current)
     current.consecutive = attempt
     current.cls = cls
+    current.message = message
     current.timer = setTimeout(() => {
       current.timer = undefined
       resumeWork(agent, cls, attempt, message)
@@ -299,6 +303,11 @@ export function apply(ctx, config = {}, options = {}) {
         return
       }
       const cls = classifyError(error)
+      // 系统挂起打断了这一轮：这不是真的失败，别让恢复把它当成错误重试。
+      if (inResumeGrace()) {
+        logInfo(ctx, 'the failure overlapped a system suspend; automatic recovery is skipped')
+        return
+      }
       if (cls === AUTH || cls === CONTEXT) {
         logWarn(ctx, `${cls} failure cannot be retried automatically: ${errorText(error)}`)
         return
@@ -364,8 +373,16 @@ export function apply(ctx, config = {}, options = {}) {
     disposers.push(ctx.on('agent/error', onAgentError))
     disposers.push(ctx.on('session/event', onSessionEvent))
     disposers.push(ctx.on('agent/disposed', onDisposed))
+    // 系统从睡眠里恢复：等待中的恢复立即执行，不要继续按挂起前算好的倒计时等。
+    const releaseResume = power?.onResume?.(() => {
+      for (const [agent, entry] of [...recovery]) {
+        clearTimers(entry)
+        resumeWork(agent, entry.cls, entry.consecutive, entry.message)
+      }
+    }) ?? (() => {})
 
     return () => {
+      releaseResume()
       for (const dispose of disposers.splice(0)) {
         try {
           dispose()

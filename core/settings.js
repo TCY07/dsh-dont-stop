@@ -10,12 +10,14 @@
  *   minRoundIntervalMs  两条监督消息之间的最短间隔
  *   questionLimitAlways 没在监督时也限制“提问”的等待时长
  *   questionLimitMs     等待用户回答提问的上限，0 表示不限
+ *   keepAwake           监督期间是否阻止系统空闲睡眠：off / ac-only / always
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { normalizeKeepAwakeMode } from '../power/platform.js'
 import { errorText, logWarn } from '../shared/util.js'
 
 export const DEFAULT_SETTINGS = {
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   minRoundIntervalMs: 0,
   questionLimitAlways: false,
   questionLimitMs: 300000,
+  keepAwake: 'ac-only',
 }
 
 /** 最短间隔的上限：两小时。 */
@@ -48,7 +51,7 @@ export function defaultSettingsPath() {
 /**
  * 只接受已知字段的合法值：认不出来的退回默认值，两个时长夹在 0 到两小时之间。
  * @param {unknown} raw - 从文件或请求体读到的值。
- * @returns {{waitTool: boolean, errorRecovery: boolean, stopAtDeadline: boolean, minRoundIntervalMs: number, questionLimitAlways: boolean, questionLimitMs: number}}
+ * @returns {{waitTool: boolean, errorRecovery: boolean, stopAtDeadline: boolean, minRoundIntervalMs: number, questionLimitAlways: boolean, questionLimitMs: number, keepAwake: 'off'|'ac-only'|'always'}}
  */
 export function normalizeSettings(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
@@ -67,6 +70,7 @@ export function normalizeSettings(raw) {
     questionLimitMs: Number.isFinite(questionLimit)
       ? (questionLimit > 0 ? Math.min(Math.round(questionLimit), MAX_QUESTION_LIMIT_MS) : 0)
       : DEFAULT_SETTINGS.questionLimitMs,
+    keepAwake: normalizeKeepAwakeMode(source.keepAwake),
   }
 }
 
@@ -105,6 +109,7 @@ export function createSettingsStore({ path = defaultSettingsPath(), onError } = 
         || next.minRoundIntervalMs !== value.minRoundIntervalMs
         || next.questionLimitAlways !== value.questionLimitAlways
         || next.questionLimitMs !== value.questionLimitMs
+        || next.keepAwake !== value.keepAwake
       value = next
       if (!changed) return value
       persist()

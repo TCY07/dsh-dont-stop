@@ -7,6 +7,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { KEEP_AWAKE_MODES } from '../power/platform.js'
+
 const SOURCE = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 
 /** 设置侧栏里的一行：只要够 client.js 认领图标用。 */
@@ -230,6 +232,54 @@ test('the dock entry, the settings page, dictionaries and styles are installed',
   assert.deepEqual([...dictionaries.keys()].sort(), ['dont-stop/en', 'dont-stop/zh'])
 })
 
+test('the two dictionaries carry the same keys', () => {
+  const { dictionaries } = loadClient()
+  const zh = dictionaries.get('dont-stop/zh')
+  const en = dictionaries.get('dont-stop/en')
+  // 中英文分开维护，改一边时另一边容易漏：这里守住键集合与非空。
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort(), 'every Chinese key has an English counterpart')
+  for (const key of Object.keys(zh)) {
+    assert.equal(typeof en[key], 'string', key)
+    assert.notEqual(en[key].trim(), '', key)
+  }
+})
+
+test('every wake-lock state the host reports has a translation', () => {
+  const host = readFileSync(new URL('../power/index.js', import.meta.url), 'utf8')
+  const reasons = new Set([...host.matchAll(/reason\s*=\s*'([a-z-]+)'/g)].map((match) => match[1]))
+  // 启动失败与能力缺失走 unsupported.reason，字面量不在上面那组赋值里，这里补上。
+  reasons.add('unsupported')
+  reasons.add('failed')
+  const { dictionaries } = loadClient()
+  for (const locale of ['zh', 'en']) {
+    const dictionary = dictionaries.get(`dont-stop/${locale}`)
+    for (const reason of reasons) {
+      const text = dictionary[`settings.power.${reason}`]
+      assert.equal(typeof text, 'string', `${locale} 缺少唤醒状态 ${reason} 的文案`)
+      assert.notEqual(text.trim(), '', `${locale} 的唤醒状态 ${reason} 是空文案`)
+    }
+  }
+})
+
+test('the keep-awake select offers exactly the modes the host accepts', () => {
+  const match = SOURCE.match(/const KEEP_AWAKE_MODES = \[([^\]]+)\]/)
+  assert.ok(match, 'client.js 应当声明与宿主一致的三种唤醒模式')
+  const clientModes = [...match[1].matchAll(/'([a-z-]+)'/g)].map((entry) => entry[1])
+  assert.deepEqual(clientModes, KEEP_AWAKE_MODES, '界面上的选项必须和宿主认可的取值一致')
+})
+
+test('the client calls the endpoints the host registers', () => {
+  const host = ['../core/index.js', '../core/settings.js']
+    .map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'))
+    .join('\n')
+  for (const name of ['SETTINGS', 'RECOVERY', 'POWER']) {
+    const inClient = SOURCE.match(new RegExp(`const ${name}_ENDPOINT = '([^']+)'`))?.[1]
+    const inHost = host.match(new RegExp(`const ${name}_ROUTE_PATH = '([^']+)'`))?.[1]
+    assert.ok(inClient !== undefined && inHost !== undefined, `${name} 的路径常量应当两边都有`)
+    assert.equal(inClient, inHost, `${name} 的路径在界面与宿主之间必须一致`)
+  }
+})
+
 test('the settings page renders every setting', () => {
   const { registrations, dictionaries } = loadClient()
   const settings = registrationFor(registrations, 'settings.section')
@@ -243,6 +293,9 @@ test('the settings page renders every setting', () => {
   assert.match(text, /提示间隔/)
   assert.match(text, /始终开启提问限时/)
   assert.match(text, /提问限时/)
+  assert.match(text, /保持系统唤醒/)
+  assert.match(text, /dsd_select/)
+  assert.match(text, /data-dont-stop-power/)
   assert.match(text, /dsd_input/)
   // 组件以函数形式嵌在树里，按函数渲染一遍才能看它们的输出。
   const rendered = []
@@ -278,6 +331,32 @@ test('the settings page renders every setting', () => {
     assert.equal(node.props.min, 0)
     assert.equal(node.props.max, 7200)
   }
+  // 保持唤醒是一个三选一的下拉，不是开关。
+  const selects = []
+  const collectSelects = (node) => {
+    if (Array.isArray(node)) {
+      for (const child of node) collectSelects(child)
+      return
+    }
+    if (node === null || typeof node !== 'object') return
+    if (node.type === 'select') selects.push(node)
+    collectSelects(node.children)
+  }
+  collectSelects(tree)
+  assert.equal(selects.length, 1, 'one select for the keep-awake mode')
+  assert.deepEqual(selects[0].children.map((option) => option.props.value), ['off', 'ac-only', 'always'])
+})
+
+test('the switch wears the built-in look', () => {
+  const { styleTags } = loadClient()
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  // 和内置设置页的开关同一套取值：关闭态用 border-l3 打底，滑块用 switch-thumb，
+  // 开启态用品牌色打底、滑块用 label-primary-foreground，行程 16px。
+  assert.match(css, /\.dsd_switch\{[^}]*width:36px;height:20px;padding:2px/, 'the switch keeps the built-in geometry')
+  assert.match(css, /\.dsd_switch\{[^}]*background:var\(--dsw-alias-border-l3\)/, 'the off track uses the built-in fill')
+  assert.match(css, /\.dsd_switch\[aria-checked="true"\]\{background:var\(--dsw-alias-brand-primary\)\}/, 'the on track fills with the brand colour')
+  assert.match(css, /\.dsd_knob\{[^}]*background:var\(--dsw-alias-switch-thumb\)/, 'the thumb uses the built-in thumb colour')
+  assert.match(css, /\.dsd_switch\[aria-checked="true"\] \.dsd_knob\{[^}]*translate\(16px\)[^}]*background:var\(--dsw-alias-label-primary-foreground\)/, 'the thumb slides and flips colour when on')
 })
 
 test('a failed stop request falls back to the host force-stop', async () => {

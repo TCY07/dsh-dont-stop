@@ -15,7 +15,7 @@
 - Want the AI to keep iterating by itself, but it stops after a few minutes?
 - Left a task running, came back, and all it did was ask two questions?
 - Or did a short network or provider hiccup kill the whole run?
-- **>>> Turn on Dont-Stop and the agent JUST CAN'T STOP. >>>**
+- **>>> Turn on Dont-Stop and the agent JUST CAN'T STOP! <<<**
 
 ```text
 /dont-stop 6h read the README and the docs here, then implement everything they describe.
@@ -55,6 +55,18 @@
 
 Currently built for DeepSeek Harness 0.2.1-rc.5 (Web / Desktop).
 
+The keep-awake mechanism is picked automatically from the host type and the OS, and no system power setting is changed:
+
+| Host / OS | Mechanism |
+| --- | --- |
+| Desktop app (Electron, Windows / macOS / Linux) | in-process power request (`powerSaveBlocker`) |
+| Web / CLI (Windows) | PowerShell calling `SetThreadExecutionState` |
+| Web / CLI (macOS) | `caffeinate -i`, watching the host process |
+| Web / CLI (Linux) | a `systemd-inhibit` lock |
+| WSL / containers | not possible; the plugin only tells you to set the host machine instead |
+
+These can never be prevented by a plugin, only by a system setting: closing the lid, sleeping or hibernating manually, forced hibernation on critical battery, power loss and blue screens.
+
 ## Features
 
 - **Deadline supervision**: set a deadline; finishing early gets the agent nudged to keep iterating until the time is up.
@@ -62,6 +74,7 @@ Currently built for DeepSeek Harness 0.2.1-rc.5 (Web / Desktop).
 - **Automatic error recovery**: on rate limits, exhausted quota, request timeouts, server errors and network failures it waits a while and then tries again. (This wraps a second wait around DSH's own retry, so a single hiccup can back off for hours.)
 - **Stop at the deadline**: (opt-in) when the deadline arrives, the agent is asked to wrap up quickly and stop working.
 - **Question time limit**: a question that goes unanswered for too long is closed and the agent is asked to decide for itself, so it never sits stuck waiting for a reply.
+- **Keep the system awake**: (opt-in) blocks system sleep while Dont-Stop is active.
 
 ## Settings
 
@@ -75,6 +88,7 @@ Everything lives on the Dont-Stop page in the DSH settings, and takes effect imm
 | Prompt interval | 0 s (no limit) | Shortest gap between two Dont-Stop nudges |
 | Always limit question waits | off | Applies the question limit even while Dont-Stop is not active |
 | Question wait limit | 300 s | Longest wait for an answer; after that the question is closed and the agent decides on its own; 0 means no limit |
+| Keep the system awake | on AC power | Blocks system sleep while Dont-Stop is active; choose off / on AC power / always |
 
 ![Settings page](docs/images/settings.png)
 
@@ -86,6 +100,7 @@ npm test
 
 ## Changelog
 
+- **0.2.0**: keeps the system awake while Dont-Stop is active (mechanism picked per platform, no admin rights).
 - **0.1.0**: first release.
 
 ## License

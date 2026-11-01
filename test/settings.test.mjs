@@ -3,11 +3,11 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import test from 'node:test'
+import test, { after } from 'node:test'
 
 import {
   DEFAULT_SETTINGS,
@@ -21,7 +21,11 @@ import {
 } from '../core/settings.js'
 import { makeFakeContext } from './fake-ctx.mjs'
 
-const tempPath = () => join(mkdtempSync(join(tmpdir(), 'dsh-dont-stop-')), 'settings.json')
+// 用例之间用不同的设置文件；整个文件的临时目录在结束时删掉，别把 %TEMP% 堆满。
+const TEMP_ROOT = mkdtempSync(join(tmpdir(), 'dsh-dont-stop-settings-'))
+after(() => rmSync(TEMP_ROOT, { recursive: true, force: true }))
+let tempSequence = 0
+const tempPath = () => join(TEMP_ROOT, `settings-${(tempSequence += 1)}.json`)
 
 function makeRequest({ method = 'GET', body, headers = {} } = {}) {
   const request = body === undefined ? Readable.from([]) : Readable.from([Buffer.from(JSON.stringify(body))])
@@ -56,6 +60,7 @@ test('normalizeSettings falls back to defaults for unknown values', () => {
     minRoundIntervalMs: 0,
     questionLimitAlways: false,
     questionLimitMs: 300000,
+    keepAwake: 'ac-only',
   })
 })
 
@@ -82,6 +87,14 @@ test('normalizeSettings clamps the question limit and keeps the always-on switch
   assert.equal(normalizeSettings({ questionLimitMs: 90000.4 }).questionLimitMs, 90000)
 })
 
+test('normalizeSettings keeps only the three keep-awake modes', () => {
+  assert.equal(normalizeSettings({ keepAwake: 'off' }).keepAwake, 'off')
+  assert.equal(normalizeSettings({ keepAwake: 'always' }).keepAwake, 'always')
+  assert.equal(normalizeSettings({ keepAwake: 'ac-only' }).keepAwake, 'ac-only')
+  assert.equal(normalizeSettings({ keepAwake: 'sometimes' }).keepAwake, 'ac-only', 'unknown values fall back to ac-only')
+  assert.equal(normalizeSettings({ keepAwake: true }).keepAwake, 'ac-only')
+})
+
 test('a fresh store starts from defaults and persists updates', () => {
   const path = tempPath()
   const store = createSettingsStore({ path })
@@ -94,9 +107,10 @@ test('a fresh store starts from defaults and persists updates', () => {
     minRoundIntervalMs: 30000,
     questionLimitAlways: false,
     questionLimitMs: 300000,
+    keepAwake: 'ac-only',
   })
   const reopened = createSettingsStore({ path })
-  assert.deepEqual(reopened.get(), { waitTool: false, errorRecovery: true, stopAtDeadline: true, minRoundIntervalMs: 30000, questionLimitAlways: false, questionLimitMs: 300000 })
+  assert.deepEqual(reopened.get(), { waitTool: false, errorRecovery: true, stopAtDeadline: true, minRoundIntervalMs: 30000, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
 })
 
 test('subscribers hear only real changes', () => {
@@ -134,7 +148,7 @@ test('POST merges the supplied fields', async () => {
     headers: { host: '127.0.0.1:63005', origin: 'http://127.0.0.1:63005' },
   }), response, store)
   assert.equal(response.status, 200)
-  assert.deepEqual(JSON.parse(response.body).value, { waitTool: true, errorRecovery: true, stopAtDeadline: false, minRoundIntervalMs: 0, questionLimitAlways: false, questionLimitMs: 300000 })
+  assert.deepEqual(JSON.parse(response.body).value, { waitTool: true, errorRecovery: true, stopAtDeadline: false, minRoundIntervalMs: 0, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
 })
 
 test('a cross-site write is refused', async () => {

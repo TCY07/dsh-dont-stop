@@ -118,3 +118,18 @@ export function requestStopSupervision(sessionId) {
     return false
   }
 }
+
+/**
+ * 系统刚从睡眠里恢复时的宽限期：挂起会打断正在跑的回合，
+ * 这段窗口内出现的失败是“被打断”而不是“跑挂了”，不能计入退避。
+ */
+let resumeGraceUntil = 0
+
+export function markResume(graceMs = 10000) {
+  resumeGraceUntil = Date.now() + Math.max(1, Math.round(graceMs))
+  return resumeGraceUntil
+}
+
+export function inResumeGrace() {
+  return Date.now() < resumeGraceUntil
+}
