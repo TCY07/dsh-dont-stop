@@ -62,10 +62,10 @@ function notice(text, attrs, machine) {
 
 /* ───────────── 开始 ───────────── */
 
-/** 开始监督的公告；等待工具被关掉时不提它（模型不该看到自己调不了的工具）。 */
+/** 开始监督的公告：固定规则之后总是那句等待工具说明（工具随插件常驻，不会关掉）。 */
 export function supervisionNotice(state, options = {}) {
   const text = promptText().start
-  const body = [...text.lines, ...(options.waitTool === false ? [] : [text.waitToolLine])].join('\n')
+  const body = [...text.lines, text.waitToolLine].join('\n')
   const machine = { phase: 'start', startedAt: state.startedAt, deadlineAt: state.deadlineAt }
   // 到点是否强停：状态条要靠它显示本周期行为，模型看不到 machine。
   if (typeof options.stopAtDeadline === 'boolean') machine.stopAtDeadline = options.stopAtDeadline
@@ -97,8 +97,8 @@ export function roundPrompt(state) {
   ].join('\n')
 }
 
-/** dont_stop_wait 的工具说明；工具在插件加载时注册，改这段要重载插件。 */
-export const WAIT_TOOL_DESCRIPTION = promptText().waitTool.join('')
+/** dont_stop_wait 的工具说明；每条独立成行，工具在插件加载时注册，改这段要重载插件。 */
+export const WAIT_TOOL_DESCRIPTION = promptText().waitTool.join('\n')
 
 /** 等人类回答超时后，要求模型自行决定。 */
 export function humanTimeoutPrompt() {

@@ -66,7 +66,7 @@ function loadClient(options = {}) {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ ok: true, value: { waitTool: true, stopAtDeadline: true, minRoundIntervalMs: 0 } }),
+        json: async () => ({ ok: true, value: { stopAtDeadline: true, minRoundIntervalMs: 0 } }),
       }
     },
   }
@@ -287,7 +287,7 @@ test('the settings page renders every setting', () => {
   const tree = settings.component({ t: (key) => zh[key] ?? key })
   const text = JSON.stringify(tree)
   assert.match(text, /data-dont-stop-settings/)
-  assert.match(text, /允许 agent 发起等待/)
+  assert.doesNotMatch(text, /允许 agent 发起等待/, 'the wait tool is no longer a setting')
   assert.match(text, /错误恢复/)
   assert.match(text, /到点停止/)
   assert.match(text, /提示间隔/)
@@ -310,7 +310,7 @@ test('the settings page renders every setting', () => {
   }
   collect(tree)
   const switches = rendered.filter((node) => node?.props?.role === 'switch')
-  assert.equal(switches.length, 4, 'one switch per boolean setting')
+  assert.equal(switches.length, 3, 'one switch per boolean setting')
   for (const node of switches) {
     assert.match(node.props.className, /dsd_switch/)
     assert.equal(typeof node.props['aria-checked'], 'string')

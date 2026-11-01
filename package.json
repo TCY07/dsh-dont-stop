@@ -1,6 +1,6 @@
 {
   "name": "dsh-dont-stop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "license": "MIT",
   "description": "Keeps an agent working continuously over long stretches: set a deadline, and if it finishes the task early, Dont-Stop automatically nudges it to keep iterating and take on the next step on its own.",

@@ -154,10 +154,27 @@ export function makeFakeAgent(id = 'session-1') {
 
 export function makeFakeSubagents(children = []) {
   const interrupted = []
+  // 子项可以是会话 id，也可以是 { id, activity }：join 语义要看 activity。
+  const rows = children.map((child) => (typeof child === 'string'
+    ? { id: child, activity: 'running' }
+    : { activity: 'running', ...child }))
   return {
     interrupted,
+    rows,
     async listChildren() {
-      return children.map((id) => ({ id, mode: 'continuable', label: id }))
+      return rows.map(({ id, mode = 'continuable', label }) => ({ id, mode, label: label ?? id }))
+    },
+    async listDescendants() {
+      return rows.map(({ id, activity, mode = 'continuable', label }) => ({
+        kind: 'child',
+        id,
+        activity,
+        mode,
+        label: label ?? id,
+        parentId: 'parent',
+        depth: 1,
+        hasChildren: false,
+      }))
     },
     interrupt(targetSessionId, authority) {
       interrupted.push({ targetSessionId, authority })

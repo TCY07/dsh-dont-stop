@@ -11,11 +11,12 @@
  *  - 每轮提示要求模型在旧目标完成后自行决定下一个目标（结合工作区状态与用户可能期望），而不是死守原目标。
  *
  * 未到点：工具调用一律等结果；只有“等人类回答”有上限（默认 5 分钟）。
- * 到点：停止注入轮次 → 提示收尾 → 5 分钟软着陆窗口 → 强停（停子 agent/后台任务，再结束 turn）。
+ * 到点：停止注入轮次 → 提示收尾（模型空闲时也叫醒一轮）→ 5 分钟软着陆窗口 → 强停
+ * （停子 agent/后台任务，再结束 turn）。
  * 人类手动强停（终止回答）优先级最高：直接终止监督。
  *
- * 发给模型的文字都在仓库根的 prompts.json，由 core/prompts.js 读取拼装；四项运行时设置（等待工具、报错恢复、到点是否要求停止、
- * 两轮监督消息的最短间隔）在 core/settings.js，由设置界面的页面直接读写，改了立即生效。
+ * 发给模型的文字都在仓库根的 prompts.json，由 core/prompts.js 读取拼装；运行时设置（报错恢复、到点是否要求停止、
+ * 两轮监督消息的最短间隔、提问限时、保持系统唤醒）在 core/settings.js，由设置页直接读写，改了立即生效。
  */
 
 import { DEFAULT_DURATION_MS, MAX_DURATION_MS, USAGE, parseSpec } from '../shared/duration.js'
@@ -58,7 +59,7 @@ export const inject = ['agents', 'commands', 'tools']
 const DEFAULTS = {
   duration: { defaultMs: DEFAULT_DURATION_MS, maxMs: MAX_DURATION_MS },
   finish: { graceMs: 300000, stopChildren: true, stopJobs: true },
-  wait: { enabled: true, defaultMs: 600000, maxMs: 7200000 },
+  wait: { defaultMs: 600000, maxMs: 7200000 },
 }
 
 const TIMER_CHUNK_MS = 3600000
@@ -219,6 +220,7 @@ export function apply(ctx, config = {}, options = {}) {
           reason: { type: 'string', description: '你在等什么；会显示在日志和状态里。' },
           minutes: { type: 'number', description: '等这么多分钟后唤醒（默认取插件配置）。' },
           job_id: { type: 'string', description: '要等待的后台任务 id；它结束后继续。' },
+          subagent_id: { type: 'string', description: '只等这一个子 agent；它返回后继续。不传则等当前正在跑的子 agent 全部结束。' },
         },
         required: ['reason'],
       },
@@ -229,6 +231,8 @@ export function apply(ctx, config = {}, options = {}) {
             status: { type: 'string' },
             wakeAt: { type: 'number' },
             jobId: { type: 'string' },
+            subagentId: { type: 'string' },
+            subagentIds: { type: 'array', items: { type: 'string' } },
           },
           required: ['status'],
         },
@@ -241,13 +245,50 @@ export function apply(ctx, config = {}, options = {}) {
         if (current.mode !== 'supervising') return { status: 'finishing' }
         const minutes = typeof args?.minutes === 'number' && Number.isFinite(args.minutes) ? args.minutes : undefined
         const jobId = typeof args?.job_id === 'string' && args.job_id !== '' ? args.job_id : undefined
+        const subagentId = typeof args?.subagent_id === 'string' && args.subagent_id !== '' ? args.subagent_id : undefined
+        // 没点名某个子 agent 时，把“当前正在跑的直接子 agent”整体当成一个 join：
+        // 全部结束才唤醒，而不是谁先结束谁说了算。
+        const subagentIds = subagentId === undefined ? await runningSubagents(agent) : undefined
+        // 列举子 agent 是异步的：这期间监督可能已经结束，别把等待挂到已经不在的状态上。
+        if (states.get(agent) !== current || current.mode !== 'supervising') return { status: 'not-supervised' }
         const wakeAt = beginWait(current, {
           reason: typeof args?.reason === 'string' ? args.reason : '',
           minutes,
           jobId,
+          subagentId,
+          subagentIds,
         })
-        return { status: 'waiting', ...(wakeAt === undefined ? {} : { wakeAt }), ...(jobId === undefined ? {} : { jobId }) }
+        const joined = subagentIds === undefined || subagentIds.size === 0 ? undefined : [...subagentIds]
+        return {
+          status: 'waiting',
+          ...(wakeAt === undefined ? {} : { wakeAt }),
+          ...(jobId === undefined ? {} : { jobId }),
+          ...(subagentId === undefined ? {} : { subagentId }),
+          ...(joined === undefined ? {} : { subagentIds: joined }),
+        }
       },
+    }
+  }
+
+  /**
+   * 当前正在跑的直接子 agent。用它把“等子 agent”做成 join：
+   * 拿不到服务或读不出来时返回 undefined，调用方退回“首个结束即唤醒”。
+   */
+  async function runningSubagents(agent) {
+    const service = ctx.get('subagents')
+    if (!service || typeof service.listDescendants !== 'function') return undefined
+    try {
+      const entries = await service.listDescendants(agent.id)
+      if (!Array.isArray(entries)) return undefined
+      const ids = new Set()
+      for (const entry of entries) {
+        if (entry?.kind !== 'child' || entry.depth !== 1 || entry.activity !== 'running') continue
+        if (typeof entry.id === 'string' && entry.id !== '') ids.add(entry.id)
+      }
+      return ids
+    } catch (error) {
+      logWarn(ctx, `could not list the running subagents: ${errorText(error)}`)
+      return undefined
     }
   }
 
@@ -467,6 +508,9 @@ export function apply(ctx, config = {}, options = {}) {
     state.waiting = {
       reason: request.reason ?? '',
       jobId: request.jobId,
+      subagentId: request.subagentId,
+      // join 模式：这些子 agent 全部结束才唤醒。声明时为空集合表示“没有在跑的子 agent”。
+      subagentIds: request.subagentIds,
       wakeAt: Date.now() + waitMs,
     }
     state.waitTimer = setTimeout(() => {
@@ -494,11 +538,12 @@ export function apply(ctx, config = {}, options = {}) {
     // 同一轮里再次声明等待时，驱动可能已经被上一次等待停掉，这个标记不能因此丢掉。
     state.waitStoppedDriver = state.waitStoppedDriver === true || driverWillDrive(agent)
     if (state.waitStoppedDriver) stopDriver(state)
-    logInfo(ctx, `waiting until ${formatClock(state.waiting.wakeAt)}${request.jobId === undefined ? '' : ` or job ${request.jobId}`}${request.reason === '' ? '' : `: ${request.reason}`}`)
+    const joined = request.subagentIds === undefined ? '' : ` or ${request.subagentIds.size === 0 ? 'any' : [...request.subagentIds].join(', ')} subagent(s) to settle`
+    logInfo(ctx, `waiting until ${formatClock(state.waiting.wakeAt)}${request.jobId === undefined ? '' : ` or job ${request.jobId}`}${request.subagentId === undefined ? '' : ` or subagent ${request.subagentId}`}${joined}${request.reason === '' ? '' : `: ${request.reason}`}`)
     return state.waiting.wakeAt
   }
 
-  /** 到点：停止注入 → 收尾提示 → 5 分钟软着陆窗口。 */
+  /** 到点：停止注入 → 收尾提示（空闲也叫醒）→ 5 分钟软着陆窗口。 */
   function beginFinish(state, reason) {
     if (!state || state.mode === 'finishing') return
     // 命令里的选项优先于设置页的全局开关：两者都表示“到点不强停”时，只结束监督。
@@ -507,6 +552,7 @@ export function apply(ctx, config = {}, options = {}) {
       return
     }
     state.mode = 'finishing'
+    state.finishReason = reason
     clearDeadlineTimer(state)
     clearHumanTimer(state)
     clearRoundTimer(state)
@@ -519,23 +565,38 @@ export function apply(ctx, config = {}, options = {}) {
     }
     stopDriver(state)
     // 结束公告同时是状态条的收尾信号：无论模型在不在跑都要写，否则日志里会一直留着“监督中”。
-    // 需要停止且模型正在跑时，再要求它尽快收尾；inject 不额外唤醒回合，steer 才落到正在跑的那一步。
     const notice = endNotice(reason)
     if (!injectNotice(agent, notice)) injectNoticeLater(agent, notice)
-    if (agent.status === 'running') {
-      try {
-        agent.steer(userMessage(finishSteer()))
-      } catch (error) {
-        logWarn(ctx, `could not steer the wrap-up instruction: ${errorText(error)}`)
-      }
+    if (!armFinishWindow(state, reason)) settle(state)
+  }
+
+  /**
+   * 收尾窗口：让模型尽快收尾，缓冲时间后强停。
+   *
+   * 正在跑就 steer 到当前这一步；空闲（声明过等待、回合已经结束）也要 followup 叫醒一轮，
+   * 否则模型既读不到收尾要求，也不会去结束自己启动的 subagent 与后台任务。
+   * 人类手动停止且模型空闲时没有在跑的工作，不开这一轮，直接收尾。
+   * @returns {boolean} 是否进入了收尾窗口；false 表示调用方应直接收尾。
+   */
+  function armFinishWindow(state, reason) {
+    const { agent } = state
+    const running = agent.status === 'running'
+    if (!running && reason !== 'deadline') return false
+    try {
+      const message = userMessage(finishSteer())
+      if (running) agent.steer(message)
+      else agent.followup(message)
+    } catch (error) {
+      logWarn(ctx, `could not ask the agent to wrap up: ${errorText(error)}`)
+      return false
     }
     clearHardTimer(state)
     state.hardTimer = setTimeout(() => {
       state.hardTimer = undefined
       hardStop(state)
     }, Math.max(cfg.finish.graceMs, 1))
-    if (agent.status !== 'running') settle(state)
     logInfo(ctx, `supervision finishing (${reason}); ${formatDuration(cfg.finish.graceMs)} grace before the hard stop`)
+    return true
   }
 
   function closeGoal(state) {
@@ -552,9 +613,18 @@ export function apply(ctx, config = {}, options = {}) {
     }
   }
 
-  /** 停稳：pause 仍在进行的目标，然后收尾（此时不再给模型发任何消息）。 */
+  /**
+   * 停稳：到点收尾时停掉残留的子 agent 与后台任务，pause 仍在进行的目标，
+   * 然后收尾（此时不再给模型发任何消息）。
+   */
   function settle(state) {
     if (states.get(state.agent) !== state) return
+    // 到点停止承诺“连同 subagent 与后台任务一起停”：模型自己收完尾、回合先结束时，
+    // 这里再兜一遍，别把残留的工作留在无人监督的会话里。
+    if (state.finishReason === 'deadline') {
+      stopChildren(state)
+      stopJobs(state)
+    }
     closeGoal(state)
     teardownState(state)
   }
@@ -676,6 +746,8 @@ export function apply(ctx, config = {}, options = {}) {
       // 本周期到点是否强停：命令里的 --stop / --no-stop 优先于设置页的全局开关；undefined 表示跟设置。
       stopAtDeadline: spec.stopAtDeadline,
       mode: 'supervising',
+      // 进入收尾的原因；到点停止要比手动停止多停一层（残留的 subagent 与后台任务）。
+      finishReason: undefined,
       rounds: 0,
       nextRoundAt: 0,
       // 两条监督消息的最短间隔从这次监督开始算起。
@@ -698,7 +770,6 @@ export function apply(ctx, config = {}, options = {}) {
     publish(state)
     powerHold(agent.id)
     injectNotice(agent, supervisionNotice(state, {
-      waitTool: cfg.wait.enabled && settings.get().waitTool,
       stopAtDeadline: state.stopAtDeadline ?? settings.get().stopAtDeadline,
     }))
     armDeadlineTimer(state)
@@ -922,13 +993,36 @@ export function apply(ctx, config = {}, options = {}) {
     }
   }
 
-  /** 等待期间：定时提醒投递或人类发消息都会结束等待并继续下一轮。 */
+  /**
+   * 等待期间：以下消息都会结束等待并继续下一轮——
+   * 定时提醒、用户消息、teammate 消息，以及子 agent 返回结果。
+   * 子 agent 有三种等待口径：点名一个（只认它）、join（等这批全部结束，默认）、
+   * 没有子 agent 服务（退回“首个结束即唤醒”）。
+   * teammate 本身没有“结束”通知，它发消息就是有新进展。
+   */
   function onInboxInserted({ agent, message }) {
     const state = states.get(agent)
     if (!state || state.waiting === undefined) return
-    const kind = message?.source?.kind
+    const source = message?.source
+    const kind = source?.kind
     if (kind === 'schedule') endWait(state, 'reminder')
     else if (kind === 'user') endWait(state, 'human')
+    else if (kind === 'agent-message') endWait(state, 'teammate')
+    else if (kind === 'subagent-settled') {
+      const wanted = state.waiting.subagentId
+      const joined = state.waiting.subagentIds
+      if (wanted !== undefined) {
+        if (wanted === source?.senderSessionId) endWait(state, 'subagent')
+        return
+      }
+      const sender = source?.senderSessionId
+      if (joined instanceof Set) {
+        if (typeof sender === 'string') joined.delete(sender)
+        if (joined.size === 0) endWait(state, 'subagents')
+        return
+      }
+      endWait(state, 'subagent')
+    }
   }
 
   /** 主动结束监督（人类强停，或到点但设置里不要求停止）：停掉计时器与等待订阅，不再驱动。 */
@@ -1123,32 +1217,22 @@ export function apply(ctx, config = {}, options = {}) {
 
   /**
    * dont_stop_wait 随插件常驻注册：监督中生效，其余时候返回 not-supervised。
-   * 设置页关掉它就当场注销，打开就当场注册，不用重载插件行。
+   * 它不是设置项，注册一次就不再变化。
    */
   let disposeWaitTool
 
-  function syncWaitTool() {
-    const wanted = cfg.wait.enabled && settings.get().waitTool
-    if (wanted === (disposeWaitTool !== undefined)) return
-    if (wanted) {
-      const tools = ctx.get('tools')
-      if (!tools || typeof tools.register !== 'function') {
-        logWarn(ctx, `tool service is unavailable; ${WAIT_TOOL} was not registered`)
-        return
-      }
-      try {
-        disposeWaitTool = tools.register(waitToolDefinition())
-      } catch (error) {
-        logWarn(ctx, `could not register ${WAIT_TOOL}: ${errorText(error)}`)
-      }
+  function registerWaitTool() {
+    if (disposeWaitTool !== undefined) return
+    const tools = ctx.get('tools')
+    if (!tools || typeof tools.register !== 'function') {
+      logWarn(ctx, `tool service is unavailable; ${WAIT_TOOL} was not registered`)
       return
     }
     try {
-      disposeWaitTool()
+      disposeWaitTool = tools.register(waitToolDefinition())
     } catch (error) {
-      logWarn(ctx, `could not unregister ${WAIT_TOOL}: ${errorText(error)}`)
+      logWarn(ctx, `could not register ${WAIT_TOOL}: ${errorText(error)}`)
     }
-    disposeWaitTool = undefined
   }
 
   ctx.effect(() => {
@@ -1158,15 +1242,14 @@ export function apply(ctx, config = {}, options = {}) {
     } catch (error) {
       logWarn(ctx, `could not register /dont-stop: ${errorText(error)}`)
     }
-    syncWaitTool()
-    const unsubscribeSettings = settings.subscribe(syncWaitTool)
+    registerWaitTool()
     // “始终提问限时”关掉时，没监督那边挂着的等待立即撤掉。
     const unsubscribeQuestionLimit = settings.subscribe((value) => {
       if (value.questionLimitAlways === true) return
       for (const agent of [...questionWaits.keys()]) clearQuestionWait(agent)
     })
     registerProjection(disposers)
-    // 设置页读写三项设置走这个接口；没有 webServer 的组成（比如纯 CLI）直接跳过。
+    // 设置页读写这些设置走这个接口；没有 webServer 的组成（比如纯 CLI）直接跳过。
     const releaseSettingsRoute = ctx.inject(['webServer'], (scoped) => {
       scoped.effect(() => registerSettingsRoute(scoped, scoped.webServer, settings))
     })
@@ -1216,7 +1299,6 @@ export function apply(ctx, config = {}, options = {}) {
     disposers.push(ctx.on('agent/inbox/inserted', onInboxInserted))
 
     return () => {
-      unsubscribeSettings()
       unsubscribeQuestionLimit()
       if (disposeWaitTool !== undefined) {
         try {

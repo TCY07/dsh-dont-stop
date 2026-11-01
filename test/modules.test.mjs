@@ -11,7 +11,7 @@ import { apply as applyRetry } from '../retry/index.js'
 import { makeFakeAgent, makeFakeContext } from './fake-ctx.mjs'
 
 /** apply 只读 get()/subscribe()；写路径由设置页与设置存储的测试覆盖。 */
-function settingsStub(value = { errorRecovery: true, minRoundIntervalMs: 0, waitTool: true, stopAtDeadline: true }) {
+function settingsStub(value = { errorRecovery: true, minRoundIntervalMs: 0, stopAtDeadline: true }) {
   return {
     get: () => value,
     subscribe: () => () => {},

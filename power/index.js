@@ -82,6 +82,8 @@ export function createKeepAwake(options = {}) {
   const env = options.env ?? process.env
   const injected = options.io ?? {}
   const now = typeof injected.now === 'function' ? injected.now : Date.now
+  // 单调时钟只增不减：挂起时它也会前进，但不像墙钟那样会被校时跳变拉走。
+  const monotonic = typeof injected.monotonic === 'function' ? injected.monotonic : () => performance.now()
   const io = {
     exists: injected.exists ?? ((path) => existsSync(path)),
     readFile: injected.readFile ?? ((path) => {
@@ -128,10 +130,12 @@ export function createKeepAwake(options = {}) {
   let onBattery = null
   let since = 0
   let lastError
+  let lastUnsupportedWarn
   let unsupported
   let lastResumeAt = 0
   let lastSuspendedMs = 0
   let lastClock = 0
+  let lastMonotonic = 0
   let clockTimer
   let acTimer
   let retryTimer
@@ -249,8 +253,9 @@ export function createKeepAwake(options = {}) {
             const backend = holding.backend
             holding = undefined
             generation += 1
-            stopAcWatch()
             lastError = describe()
+            // 报告成“启用失败”，否则设置页会把它显示成无害的“未生效”。
+            unsupported = { reason: 'failed', detail: lastError }
             log.warn(`the keep-awake helper exited unexpectedly (${backend}); it will be retried later`)
             scheduleRetry()
           }
@@ -328,12 +333,12 @@ export function createKeepAwake(options = {}) {
     try {
       if (platform === 'linux') return readLinuxBatteryState({ readdir: io.readdir, readFile: io.readFile })
       if (platform === 'darwin') {
-        const output = await execFileAsync(io.execFile, '/usr/bin/pmset', ['-g', 'batt'], { timeout: 5000 })
+        const output = await execFileAsync(io.execFile, '/usr/bin/pmset', ['-g', 'batt'], { timeout: 5000, windowsHide: true })
         return parseMacBatteryState(output)
       }
       if (platform === 'win32') {
         const query = windowsBatteryQuery(env)
-        const output = await execFileAsync(io.execFile, query.file, query.args, { timeout: 20000 })
+        const output = await execFileAsync(io.execFile, query.file, query.args, { timeout: 20000, windowsHide: true })
         return parseWindowsBatteryStatus(output)
       }
     } catch {
@@ -343,13 +348,17 @@ export function createKeepAwake(options = {}) {
   }
 
   async function refreshBattery(trigger) {
-    const previous = onBattery
-    const value = await probeBattery()
-    onBattery = typeof value === 'boolean' ? value : null
-    if (previous !== onBattery && trigger !== 'attach') {
-      log.info(`power source is now ${onBattery === true ? 'the battery' : onBattery === false ? 'AC' : 'unknown'}`)
+    try {
+      const previous = onBattery
+      const value = await probeBattery()
+      onBattery = typeof value === 'boolean' ? value : null
+      if (previous !== onBattery && trigger !== 'attach') {
+        log.info(`power source is now ${onBattery === true ? 'the battery' : onBattery === false ? 'AC' : 'unknown'}`)
+      }
+      evaluate(trigger)
+    } catch (error) {
+      log.warn(`could not read the power source: ${errorText(error)}`)
     }
-    evaluate(trigger)
   }
 
   function acPollMs() {
@@ -366,10 +375,17 @@ export function createKeepAwake(options = {}) {
     }
   }
 
-  function startAcWatch() {
-    stopAcWatch()
-    if (mode() !== 'ac-only') return
-    if (electron?.powerMonitor !== undefined) return
+  /**
+   * 电池轮询跟着“监督中 + 插电时生效”走，而不是跟着持锁走：
+   * 拔电释放锁之后仍要轮询，才能发现插回电源并重新持锁。
+   */
+  function syncAcWatch() {
+    const wanted = !disposed && owners.size > 0 && mode() === 'ac-only' && electron?.powerMonitor === undefined
+    if (!wanted) {
+      stopAcWatch()
+      return
+    }
+    if (acTimer !== undefined) return
     acTimer = io.setInterval(() => {
       void refreshBattery('poll')
     }, acPollMs())
@@ -396,12 +412,16 @@ export function createKeepAwake(options = {}) {
 
   function startClockWatch() {
     lastClock = now()
+    lastMonotonic = monotonic()
     clockTimer = io.setInterval(() => {
       const stamp = now()
       const gap = stamp - lastClock
+      const monoGap = Math.max(0, monotonic() - lastMonotonic)
       lastClock = stamp
+      lastMonotonic = monotonic()
       // 定时器在挂起期间被冻结：醒来后第一跳的间隔会远大于设定值。
-      if (gap >= Math.max(CLOCK_TICK_MS * 2, RESUME_MIN_GAP_MS)) reportResume(gap - CLOCK_TICK_MS)
+      // 墙钟跳跃但单调时钟也走过同样的时间，说明是校时或事件循环停顿，不是睡醒。
+      if (gap >= Math.max(CLOCK_TICK_MS * 2, RESUME_MIN_GAP_MS) && monoGap < gap / 2) reportResume(gap - CLOCK_TICK_MS)
     }, CLOCK_TICK_MS)
     clockTimer?.unref?.()
   }
@@ -409,10 +429,18 @@ export function createKeepAwake(options = {}) {
   function startMonitorWatch() {
     const monitor = electron?.powerMonitor
     if (monitor === undefined || typeof monitor.on !== 'function') return
+    // Electron 的 on() 返回 emitter 本身，不返回注销函数：注销要自己用 removeListener 做。
     const subscribe = (name, listener) => {
       try {
-        const unsubscribe = monitor.on(name, listener)
-        if (typeof unsubscribe === 'function') disposers.push(unsubscribe)
+        monitor.on(name, listener)
+        disposers.push(() => {
+          try {
+            const remove = monitor.removeListener ?? monitor.off
+            if (typeof remove === 'function') remove.call(monitor, name, listener)
+          } catch {
+            /* 宿主已经拆掉服务 */
+          }
+        })
       } catch {
         /* 事件名在旧版 Electron 上可能不存在 */
       }
@@ -446,8 +474,8 @@ export function createKeepAwake(options = {}) {
     since = now()
     unsupported = undefined
     lastError = undefined
+    lastUnsupportedWarn = undefined
     log.info(`keeping the system awake (${result.backend})`)
-    startAcWatch()
   }
 
   function releaseHandle(handle) {
@@ -463,14 +491,22 @@ export function createKeepAwake(options = {}) {
     let result
     try {
       result = await selectAndStart()
+    } catch (error) {
+      // 注入的 IO 或 helper 构造抛出时也要落成一次“启动失败”，不能让 promise 悬着。
+      result = { ok: false, reason: 'failed', detail: errorText(error) }
     } finally {
       starting = false
     }
     if (result.ok !== true) {
       unsupported = { reason: result.reason, detail: result.detail }
       lastError = result.detail
-      log.warn(`could not keep the system awake: ${result.detail ?? result.reason}`)
-      scheduleRetry()
+      // 同一条失败原因（比如容器里永远起不来）只记一次，长监督下不刷屏。
+      if (lastError !== lastUnsupportedWarn) {
+        lastUnsupportedWarn = lastError
+        log.warn(`could not keep the system awake: ${result.detail ?? result.reason}`)
+      }
+      // 环境本来就不支持时重试没有意义，只会每 5 分钟白跑一次。
+      if (result.reason !== 'unsupported') scheduleRetry()
       return
     }
     if (disposed || token !== generation || !desired()) {
@@ -482,7 +518,6 @@ export function createKeepAwake(options = {}) {
 
   function stopHold(reason) {
     clearRetry()
-    stopAcWatch()
     if (holding === undefined) return
     const current = holding
     holding = undefined
@@ -493,6 +528,7 @@ export function createKeepAwake(options = {}) {
 
   function evaluate(trigger) {
     if (disposed) return
+    syncAcWatch()
     if (desired()) {
       if (holding === undefined && !starting) void startHold(trigger)
       return

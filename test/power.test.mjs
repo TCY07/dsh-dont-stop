@@ -47,7 +47,7 @@ function makeTimers() {
     },
     setInterval(callback, ms) {
       nextId += 1
-      const entry = { id: nextId, callback, ms, unref() {} }
+      const entry = { id: nextId, callback, ms, cleared: false, unref() {} }
       intervals.push(entry)
       return entry
     },
@@ -130,9 +130,14 @@ function makeElectron({ onBattery = false } = {}) {
     },
     powerMonitor: {
       isOnBatteryPower: () => onBattery,
+      /** 与 Electron 一致：on() 返回 emitter 本身，不是注销函数。 */
       on(name, callback) {
         monitorListeners.set(name, callback)
-        return () => monitorListeners.delete(name)
+        return this
+      },
+      removeListener(name, callback) {
+        if (monitorListeners.get(name) === callback) monitorListeners.delete(name)
+        return this
       },
     },
   }
@@ -238,6 +243,8 @@ test('the Windows script sets and clears the continuous execution state', () => 
   assert.match(script, /SetThreadExecutionState\(\[uint32\]2147483648\)/, 'clears the request on the way out')
   assert.match(script, /Get-Process -Id 7/)
   assert.match(script, /\[Console\]::Error\.WriteLine/, 'failures come back as plain text, not CLIXML')
+  assert.match(script, /\$ProgressPreference = 'SilentlyContinue'/, 'no CLIXML progress noise in stderr')
+  assert.match(script, /if \(\$set -eq 0\)/, 'a request the system rejects is a failure, not a fake hold')
 })
 
 test('the macOS helper uses caffeinate -i and watches the host pid', () => {
@@ -253,6 +260,8 @@ test('the Linux helper blocks sleep and idle through systemd-inhibit', () => {
   assert.ok(helper.args.includes('--what=sleep:idle'))
   assert.ok(helper.args.includes('--mode=block'))
   assert.match(helper.args[helper.args.length - 1], /kill -0 4242/)
+  // pid 被复用或进程成了僵尸时，硬截止时间保证不会永久持锁。
+  assert.match(helper.args[helper.args.length - 1], /\[ "\$\(date \+%s\)" -lt \d+ \]/)
 })
 
 test('helperCandidates only offers what exists on this machine', () => {
@@ -441,8 +450,171 @@ test('a platform without any mechanism degrades with a readable reason', async (
   keepAwake.dispose()
 })
 
-test('a wall-clock jump counts as a resume, and only once', async () => {
+test('ac-only keeps polling after releasing on battery, so replugging re-holds', async () => {
+  let onBatteryNow = false
+  const children = [makeChild(), makeChild(), makeChild()]
+  const { keepAwake, timers } = makeKeepAwake({
+    platform: 'linux',
+    electron: null,
+    children,
+    exists: (path) => path.startsWith('/usr/bin'),
+    readdir: () => ['AC'],
+    readFile: (path) => {
+      if (path === '/sys/class/power_supply/AC/type') return 'Mains'
+      if (path === '/sys/class/power_supply/AC/online') return onBatteryNow ? '0' : '1'
+      return ''
+    },
+    execFile: (_file, _args, _options, callback) => callback(null, ''),
+  })
+  keepAwake.attach()
+  await tick()
+  keepAwake.hold('session-a')
+  await tick()
+  assert.equal(keepAwake.state().holding, true, 'holds while on AC')
+
+  const poll = timers.intervals.find((entry) => entry.ms === 60000)
+  assert.ok(poll, 'the battery poll runs while supervising on ac-only')
+
+  onBatteryNow = true
+  poll.callback()
+  await tick()
+  assert.equal(keepAwake.state().holding, false, 'releases when the battery takes over')
+  assert.equal(keepAwake.state().reason, 'battery')
+  assert.equal(poll.cleared, false, 'the poll keeps running after the lock is released')
+
+  onBatteryNow = false
+  poll.callback()
+  await tick()
+  assert.equal(keepAwake.state().holding, true, 're-holds when AC power comes back')
+  keepAwake.dispose()
+})
+
+test('switching from always to ac-only starts the battery poll', async () => {
+  const children = [makeChild(), makeChild()]
+  const settings = makeSettings({ keepAwake: 'always' })
+  const { keepAwake, timers } = makeKeepAwake({
+    platform: 'linux',
+    electron: null,
+    settings,
+    children,
+    exists: (path) => path.startsWith('/usr/bin'),
+    readdir: () => ['AC'],
+    readFile: (path) => {
+      if (path === '/sys/class/power_supply/AC/type') return 'Mains'
+      if (path === '/sys/class/power_supply/AC/online') return '0'
+      return ''
+    },
+    execFile: (_file, _args, _options, callback) => callback(null, ''),
+  })
+  keepAwake.attach()
+  await tick()
+  keepAwake.hold('session-a')
+  await tick()
+  assert.equal(keepAwake.state().holding, true, 'always keeps holding even on battery')
+
+  settings.update({ keepAwake: 'ac-only' })
+  await tick()
+  assert.ok(timers.intervals.some((entry) => entry.ms === 60000), 'the poll starts with the ac-only mode')
+  assert.equal(keepAwake.state().holding, false, 'battery releases the lock under ac-only')
+  keepAwake.dispose()
+})
+
+test('a helper that dies while holding reports a failure and retries later', async () => {
+  const child = makeChild()
+  const replacement = makeChild()
+  const { keepAwake, timers } = makeKeepAwake({
+    platform: 'linux',
+    electron: null,
+    settings: makeSettings({ keepAwake: 'always' }),
+    children: [child, replacement],
+    exists: (path) => path.startsWith('/usr/bin'),
+    execFile: (_file, _args, _options, callback) => callback(null, ''),
+  })
+  keepAwake.attach()
+  await tick()
+  keepAwake.hold('session-a')
+  await tick()
+  assert.equal(keepAwake.state().holding, true)
+
+  child.emit('exit', 0)
+  await tick()
+  const failed = keepAwake.state()
+  assert.equal(failed.holding, false)
+  assert.equal(failed.reason, 'failed', 'a dead helper must not be reported as idle')
+  assert.match(String(failed.detail ?? failed.error), /systemd-inhibit|exit/)
+  const retry = timers.timeouts.find((entry) => entry.ms === 300000)
+  assert.ok(retry, 'a retry is scheduled')
+  retry.callback()
+  await tick()
+  assert.equal(keepAwake.state().holding, true, 'the retry brings the lock back')
+  keepAwake.dispose()
+})
+
+test('disposing stops listening to the power monitor', async () => {
+  const electron = makeElectron()
+  const { keepAwake } = makeKeepAwake({ platform: 'win32', electron })
+  keepAwake.attach()
+  await tick()
+  assert.equal(electron.monitorListeners.size, 4, 'suspend/resume/on-ac/on-battery are subscribed')
+  keepAwake.dispose()
+  assert.equal(electron.monitorListeners.size, 0, 'the power monitor listeners are removed with the plugin')
+})
+
+test('the Windows battery probe hides its console window', async () => {
+  const options = []
+  const { keepAwake } = makeKeepAwake({
+    platform: 'win32',
+    electron: null,
+    execFile: (_file, _args, settings, callback) => {
+      options.push(settings)
+      callback(null, '2')
+    },
+  })
+  keepAwake.attach()
+  await tick()
+  assert.ok(options.length > 0, 'the battery was probed at least once')
+  assert.ok(options.every((entry) => entry?.windowsHide === true), 'the probe never flashes a console window')
+  keepAwake.dispose()
+})
+
+test('a throwing probe becomes a reported failure instead of an unhandled rejection', async () => {
+  const timers = makeTimers()
+  const keepAwake = createKeepAwake({
+    settings: makeSettings({ keepAwake: 'always' }),
+    platform: 'linux',
+    env: { PATH: '/usr/bin' },
+    io: {
+      exists: (path) => {
+        if (path.startsWith('/usr/bin')) throw new Error('exists blew up')
+        return false
+      },
+      readFile: () => '',
+      readdir: () => [],
+      spawn: () => makeChild(),
+      execFile: (_file, _args, _options, callback) => callback(null, ''),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+      electron: () => null,
+      pid: 4242,
+      settleMs: 0,
+      now: Date.now,
+    },
+    log: { info: () => {}, warn: () => {} },
+  })
+  keepAwake.attach()
+  keepAwake.hold('session-a')
+  await tick()
+  assert.equal(keepAwake.state().holding, false)
+  assert.equal(keepAwake.state().reason, 'failed')
+  assert.match(String(keepAwake.state().detail ?? keepAwake.state().error), /exists blew up/)
+  keepAwake.dispose()
+})
+
+test('a wall-clock jump counts as a resume only when the monotonic clock stayed behind', async () => {
   let stamp = 1_000_000
+  let mono = 0
   const timers = makeTimers()
   const settings = makeSettings({ keepAwake: 'always' })
   const keepAwake = createKeepAwake({
@@ -463,6 +635,7 @@ test('a wall-clock jump counts as a resume, and only once', async () => {
       pid: 4242,
       settleMs: 0,
       now: () => stamp,
+      monotonic: () => mono,
     },
     log: { info: () => {}, warn: () => {} },
   })
@@ -473,14 +646,24 @@ test('a wall-clock jump counts as a resume, and only once', async () => {
   assert.ok(clock, 'a clock watch interval is installed')
 
   stamp += 15000
+  mono += 15000
   clock.callback()
   assert.equal(resumes.length, 0, 'a normal tick is not a resume')
 
+  // 校时或事件循环停顿：墙钟跳了 10 分钟，单调时钟也走了同样的时间。
+  stamp += 600000
+  mono += 600000
+  clock.callback()
+  assert.equal(resumes.length, 0, 'a corrected wall clock is not a suspend')
+
+  // 真睡醒：墙钟跳了 10 分钟，单调时钟几乎没有动。
   stamp += 600000
   clock.callback()
-  assert.equal(resumes.length, 1, 'a five minute gap is a resume')
+  assert.equal(resumes.length, 1, 'a frozen monotonic clock means the system slept')
   assert.ok(resumes[0].suspendedMs >= 585000)
 
+  stamp += 15000
+  mono += 15000
   clock.callback()
   assert.equal(resumes.length, 1, 'the same resume is not reported twice')
   keepAwake.dispose()

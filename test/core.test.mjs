@@ -225,7 +225,8 @@ test('the next round prompt asks for more work without revealing the remaining t
   assert.match(prompt, /<dont_stop_round round="2">/)
   assert.match(prompt, /已完成 2 轮/, 'the counted rounds come from the template expression')
   assert.match(prompt, /首先检查上一轮的工作/, 'the round body comes from prompts.json')
-  assert.match(prompt, /指派子 agent 评审验收现有成果/, 'fallback ideas are offered instead of stopping')
+  assert.match(prompt, /指派 subagent 或 teammate/, 'fallback ideas are offered instead of stopping')
+  assert.match(prompt, /dont-stop-wait/, 'the subagent idea points at the wait tool')
   assert.match(prompt, /调研当前任务领域里的同类工作/)
   assert.match(prompt, /预测用户可能提出什么新的需求/, 'the model is nudged to anticipate the user')
   assert.doesNotMatch(prompt, /已完成的轮次表|工具调用数|耗时统计|这么快结束的活/, 'no round statistics are reported any more')
@@ -425,6 +426,72 @@ test('a scheduled reminder delivered during a wait resumes the work', async () =
   ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'schedule' } } })
   await tick(10)
   assert.equal(getSupervision('core-waitsched').rounds, rounds + 1)
+  ctx.dispose()
+})
+
+test('a wait for one subagent resumes only when that one settles', async () => {
+  const subagents = makeFakeSubagents([{ id: 'sub-1' }, { id: 'sub-2' }])
+  const { agent, ctx, run } = setup({ id: 'core-waitsub', subagents, config: { wait: { defaultMs: 60000 } } })
+  run('1h')
+  await tick(10)
+  const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+  const result = await tool.execute({ reason: 'waiting for the reviewer', subagent_id: 'sub-1' }, { agent })
+  assert.equal(result.subagentId, 'sub-1')
+  assert.equal(result.subagentIds, undefined, 'naming one subagent skips the join')
+  const rounds = getSupervision('core-waitsub').rounds
+  // 别的子 agent 结束不能唤醒这次等待。
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'subagent-settled', senderSessionId: 'sub-2' } } })
+  await tick(5)
+  assert.equal(getSupervision('core-waitsub').rounds, rounds, 'another subagent must not wake it')
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'subagent-settled', senderSessionId: 'sub-1' } } })
+  await tick(10)
+  assert.equal(getSupervision('core-waitsub').waiting, undefined)
+  assert.equal(getSupervision('core-waitsub').rounds, rounds + 1)
+  ctx.dispose()
+})
+
+test('a wait joins the running subagents and wakes only when all of them settle', async () => {
+  const subagents = makeFakeSubagents([{ id: 'sub-1' }, { id: 'sub-done', activity: 'inactive' }, { id: 'sub-2' }])
+  const { agent, ctx, run } = setup({ id: 'core-waitsubjoin', subagents, config: { wait: { defaultMs: 60000 } } })
+  run('1h')
+  await tick(10)
+  const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+  const result = await tool.execute({ reason: 'waiting for the review batch' }, { agent })
+  assert.deepEqual(result.subagentIds, ['sub-1', 'sub-2'], 'only the children still running are joined')
+  const rounds = getSupervision('core-waitsubjoin').rounds
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'subagent-settled', senderSessionId: 'sub-1' } } })
+  await tick(5)
+  assert.equal(getSupervision('core-waitsubjoin').rounds, rounds, 'one of two is not the whole batch')
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'subagent-settled', senderSessionId: 'sub-2' } } })
+  await tick(10)
+  assert.equal(getSupervision('core-waitsubjoin').waiting, undefined)
+  assert.equal(getSupervision('core-waitsubjoin').rounds, rounds + 1)
+  ctx.dispose()
+})
+
+test('without a subagent service a wait falls back to the first settle', async () => {
+  const { agent, ctx, run } = setup({ id: 'core-waitsubany', config: { wait: { defaultMs: 60000 } } })
+  run('1h')
+  await tick(10)
+  const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+  await tool.execute({ reason: 'waiting for whichever subagent finishes first' }, { agent })
+  const rounds = getSupervision('core-waitsubany').rounds
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'subagent-settled', senderSessionId: 'sub-x' } } })
+  await tick(10)
+  assert.equal(getSupervision('core-waitsubany').rounds, rounds + 1)
+  ctx.dispose()
+})
+
+test('a teammate message during a wait resumes the work', async () => {
+  const { agent, ctx, run } = setup({ id: 'core-waitteam', config: { wait: { defaultMs: 60000 } } })
+  run('1h')
+  await tick(10)
+  const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+  await tool.execute({ reason: 'waiting for a teammate reply' }, { agent })
+  const rounds = getSupervision('core-waitteam').rounds
+  ctx.emit('agent/inbox/inserted', { agent, message: { source: { kind: 'agent-message', senderSessionId: 'tm-9' } } })
+  await tick(10)
+  assert.equal(getSupervision('core-waitteam').rounds, rounds + 1)
   ctx.dispose()
 })
 
@@ -667,6 +734,62 @@ test('the grace window keeps the turn alive while tools still run', async () => 
   ctx.dispose()
 })
 
+test('a deadline wakes an idle agent so it can wrap up, then force-stops what is left', async () => {
+  const subagents = makeFakeSubagents(['child-1', 'child-2'])
+  const jobs = makeFakeJobs()
+  const { agent, ctx, run } = setup({ id: 'core-idle-deadline', subagents, jobs, config: { finish: { graceMs: 20 } } })
+  run('1h')
+  await tick(10)
+  getSupervision('core-idle-deadline').deadlineAt = Date.now() - 1
+  ctx.emit('agent/status', { agent, status: 'idle' })
+  await tick(10)
+  assert.equal(getSupervision('core-idle-deadline')?.mode, 'finishing', 'an idle agent still gets the wrap-up window')
+  assert.match(String(agent.calls.followup.at(-1)?.content?.[0]?.text ?? ''), /尽快收尾/, 'the idle agent is woken to wrap up')
+  assert.equal(agent.calls.steer.length, 0, 'nothing is running, so there is nothing to steer')
+  await tick(60)
+  assert.equal(getSupervision('core-idle-deadline'), undefined)
+  assert.equal(agent.calls.cancel.length, 1, 'the window still ends in a forced stop')
+  assert.equal(subagents.interrupted.length, 2, 'children left behind are interrupted')
+  assert.deepEqual(jobs.kills.map((entry) => entry.id), ['job-1'], 'leftover jobs are killed')
+  ctx.dispose()
+})
+
+test('a wrap-up turn that ends early cleans up the leftovers itself', async () => {
+  const subagents = makeFakeSubagents(['child-1'])
+  const jobs = makeFakeJobs()
+  const { agent, ctx, run } = setup({ id: 'core-idle-wrapup', subagents, jobs, config: { finish: { graceMs: 600000 } } })
+  run('1h')
+  await tick(10)
+  getSupervision('core-idle-wrapup').deadlineAt = Date.now() - 1
+  ctx.emit('agent/status', { agent, status: 'idle' })
+  await tick(10)
+  ctx.emit('agent/status', { agent, status: 'idle' })
+  await tick(10)
+  assert.equal(getSupervision('core-idle-wrapup'), undefined, 'the finished wrap-up turn ends supervision')
+  assert.equal(subagents.interrupted.length, 1, 'leftover children go with it')
+  assert.deepEqual(jobs.kills.map((entry) => entry.id), ['job-1'], 'leftover jobs go with it')
+  assert.equal(agent.calls.cancel.length, 0, 'nothing is left running, so nothing is cancelled')
+  ctx.dispose()
+})
+
+test('a deadline ends a wait by waking the agent to wrap up', async () => {
+  const subagents = makeFakeSubagents(['child-1'])
+  const jobs = makeFakeJobs()
+  const { agent, ctx, run } = setup({ id: 'core-wait-deadline', subagents, jobs, config: { finish: { graceMs: 20 } } })
+  run('1s')
+  const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+  const result = await tool.execute({ reason: '等子 agent 结束' }, { agent })
+  assert.equal(result.status, 'waiting')
+  await tick(1200)
+  assert.equal(getSupervision('core-wait-deadline')?.waiting, undefined, 'the wait is cleared at the deadline')
+  assert.match(String(agent.calls.followup.at(-1)?.content?.[0]?.text ?? ''), /尽快收尾/, 'the wait does not suppress the wrap-up message')
+  await tick(60)
+  assert.equal(getSupervision('core-wait-deadline'), undefined)
+  assert.equal(subagents.interrupted.length, 1, 'the subagent being waited on is stopped too')
+  assert.deepEqual(jobs.kills.map((entry) => entry.id), ['job-1'], 'background jobs are stopped too')
+  ctx.dispose()
+})
+
 test('disposing the plugin clears every timer and supervision entry', async () => {
   const { ctx, run } = setup({ id: 'core-dispose' })
   run('6h')
@@ -676,13 +799,20 @@ test('disposing the plugin clears every timer and supervision entry', async () =
   assert.equal(getSupervision('core-dispose'), undefined)
 })
 
-test('the wait tool is not registered when the settings switch it off', () => {
-  const { agent, ctx, run } = setup({ id: 'core-nowaittool', settings: { waitTool: false } })
-  run('1h')
-  assert.equal(ctx.registeredTools.some((entry) => entry.name === 'dont_stop_wait'), false)
-  const notice = String(agent.calls.inject[0]?.content?.[0]?.text ?? '')
-  assert.equal(notice.includes('dont_stop_wait'), false, 'the notice must not mention a tool the agent cannot call')
-  ctx.dispose()
+test('the wait tool is always registered while supervision is on', () => {
+  const { agent, ctx, run } = setup({ id: 'core-waittool' })
+  try {
+    const tool = ctx.registeredTools.find((entry) => entry.name === 'dont_stop_wait')
+    assert.ok(tool, 'the tool is registered without any setting toggle')
+    const file = fileURLToPath(new URL('../prompts.json', import.meta.url))
+    const entries = JSON.parse(readFileSync(file, 'utf8')).waitTool
+    assert.equal(tool.description, entries.join('\n'), '每条工具说明各自成行，不要粘成一段')
+    run('1h')
+    const notice = String(agent.calls.inject[0]?.content?.[0]?.text ?? '')
+    assert.ok(notice.includes('dont_stop_wait'), 'the notice tells the agent about the tool')
+  } finally {
+    ctx.dispose()
+  }
 })
 
 test('a deadline ends supervision without forcing a stop when that is switched off', async () => {

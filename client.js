@@ -76,8 +76,6 @@ window.__ModuleLoader__.load({
       'settings.title': 'Dont-Stop',
       'settings.description': 'Dont-Stop 插件相关设置。',
       'settings.loading': '正在读取设置…',
-      'settings.waitTool.label': '允许 agent 发起等待',
-      'settings.waitTool.description': '开启后 agent 可以调用工具让 Dont-Stop 在等待期间不督促其继续工作，适用于 agent 需要等待外部资源/定时任务的情况。',
       'settings.errorRecovery.label': '错误恢复',
       'settings.errorRecovery.description': '遇到限流、5小时额度不足、网络、服务商错误时尝试自动恢复，在非 Dont-Stop 状态下也生效。',
       'settings.stopAtDeadline.label': '到点停止',
@@ -147,8 +145,6 @@ window.__ModuleLoader__.load({
       'settings.title': 'Dont-Stop',
       'settings.description': 'Settings for the Dont-Stop plugin.',
       'settings.loading': 'Reading the settings…',
-      'settings.waitTool.label': 'Let the agent declare a wait',
-      'settings.waitTool.description': 'When on, the agent can call a tool that keeps Dont-Stop from nudging it while it waits; meant for waits on an external resource or a scheduled task.',
       'settings.errorRecovery.label': 'Error recovery',
       'settings.errorRecovery.description': 'Tries to recover automatically from rate limits, exhausted 5-hour quota, network and provider errors; also applies outside Dont-Stop sessions.',
       'settings.stopAtDeadline.label': 'Stop at the deadline',
@@ -324,7 +320,6 @@ window.__ModuleLoader__.load({
       const interval = Number(source.minRoundIntervalMs)
       const questionLimit = Number(source.questionLimitMs)
       return {
-        waitTool: typeof source.waitTool === 'boolean' ? source.waitTool : true,
         errorRecovery: typeof source.errorRecovery === 'boolean' ? source.errorRecovery : true,
         stopAtDeadline: typeof source.stopAtDeadline === 'boolean' ? source.stopAtDeadline : true,
         minRoundIntervalMs: Number.isFinite(interval) && interval > 0
@@ -776,13 +771,6 @@ window.__ModuleLoader__.load({
             h('div', { className: 'dsd_page_title' }, t('settings.title'))),
           h('div', { className: 'dsd_page_desc' }, t('settings.description'))),
         h('div', { className: 'dsd_rows' },
-          row('waitTool', t('settings.waitTool.label'), t('settings.waitTool.description'),
-            h(Switch, {
-              checked: settings.waitTool,
-              disabled: !editable,
-              label: t('settings.waitTool.label'),
-              onChange: (next) => save({ waitTool: next }),
-            })),
           row('errorRecovery', t('settings.errorRecovery.label'), t('settings.errorRecovery.description'),
             h(Switch, {
               checked: settings.errorRecovery,

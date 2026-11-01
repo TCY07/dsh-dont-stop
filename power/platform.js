@@ -34,7 +34,7 @@ export function detectEnvironment({ platform, env = {}, hasElectron = false, exi
       }
     }
     try {
-      container = exists('/.dockerenv') || /docker|kubepods|containerd|libpod/.test(String(readFile('/proc/1/cgroup') ?? ''))
+      container = exists('/.dockerenv') || exists('/run/.containerenv') || /docker|kubepods|containerd|libpod/.test(String(readFile('/proc/1/cgroup') ?? ''))
     } catch {
       container = false
     }
@@ -95,6 +95,8 @@ const WINDOWS_TYPE = 'DshDontStopPower'
 export function windowsHelperScript({ parentPid, ttlSeconds = 86400 }) {
   return [
     "$ErrorActionPreference = 'Stop'",
+    // 不让 PowerShell 把启动进度写成 CLIXML 塞进 stderr，失败详情才读得懂。
+    '$ProgressPreference = \'SilentlyContinue\'',
     'try {',
     'Add-Type -TypeDefinition @"',
     'using System.Runtime.InteropServices;',
@@ -103,7 +105,9 @@ export function windowsHelperScript({ parentPid, ttlSeconds = 86400 }) {
     '    public static extern uint SetThreadExecutionState(uint flags);',
     '}',
     '"@',
-    `[void][${WINDOWS_TYPE}]::SetThreadExecutionState([uint32]2147483649)`,
+    `$set = [${WINDOWS_TYPE}]::SetThreadExecutionState([uint32]2147483649)`,
+    // 返回 0 表示这次请求没被系统接受：照着“正在阻止睡眠”报出去就是假状态。
+    'if ($set -eq 0) { throw "SetThreadExecutionState returned 0" }',
     `$deadline = [DateTime]::UtcNow.AddSeconds(${Math.max(1, Math.round(ttlSeconds))})`,
     'try {',
     '    while ([DateTime]::UtcNow -lt $deadline) {',
@@ -143,11 +147,12 @@ export function buildMacHelper({ parentPid, file = '/usr/bin/caffeinate' } = {})
 
 /**
  * Linux：systemd-inhibit 持锁。锁随进程退出释放；锁住的命令用 shell 轮询父进程，
- * 这样宿主崩溃后不会把机器的睡眠永远关掉。
+ * 这样宿主崩溃后不会把机器的睡眠永远关掉；再加一个硬截止时间，pid 被复用时也不会永久持锁。
  */
-export function buildLinuxHelper({ parentPid, file = 'systemd-inhibit' } = {}) {
+export function buildLinuxHelper({ parentPid, file = 'systemd-inhibit', ttlSeconds = 86400 } = {}) {
   const pid = Math.max(1, Math.round(parentPid))
-  const watch = `while kill -0 ${pid} 2>/dev/null; do sleep 5; done`
+  const deadline = Math.floor(Date.now() / 1000) + Math.max(1, Math.round(ttlSeconds))
+  const watch = `while kill -0 ${pid} 2>/dev/null && [ "$(date +%s)" -lt ${deadline} ]; do sleep 5; done`
   return {
     backend: 'systemd-inhibit',
     file,

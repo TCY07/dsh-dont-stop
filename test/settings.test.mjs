@@ -52,9 +52,8 @@ function makeResponse() {
 
 test('normalizeSettings falls back to defaults for unknown values', () => {
   assert.deepEqual(normalizeSettings(undefined), DEFAULT_SETTINGS)
-  assert.deepEqual(normalizeSettings({ waitTool: 'yes', stopAtDeadline: 1 }), DEFAULT_SETTINGS)
-  assert.deepEqual(normalizeSettings({ waitTool: false, errorRecovery: false, stopAtDeadline: false, minRoundIntervalMs: 0 }), {
-    waitTool: false,
+  assert.deepEqual(normalizeSettings({ errorRecovery: 'yes', stopAtDeadline: 1 }), DEFAULT_SETTINGS)
+  assert.deepEqual(normalizeSettings({ errorRecovery: false, stopAtDeadline: false, minRoundIntervalMs: 0 }), {
     errorRecovery: false,
     stopAtDeadline: false,
     minRoundIntervalMs: 0,
@@ -99,10 +98,9 @@ test('a fresh store starts from defaults and persists updates', () => {
   const path = tempPath()
   const store = createSettingsStore({ path })
   assert.deepEqual(store.get(), DEFAULT_SETTINGS)
-  store.update({ waitTool: false, minRoundIntervalMs: 30000 })
+  store.update({ errorRecovery: false, minRoundIntervalMs: 30000 })
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
-    waitTool: false,
-    errorRecovery: true,
+    errorRecovery: false,
     stopAtDeadline: true,
     minRoundIntervalMs: 30000,
     questionLimitAlways: false,
@@ -110,17 +108,17 @@ test('a fresh store starts from defaults and persists updates', () => {
     keepAwake: 'ac-only',
   })
   const reopened = createSettingsStore({ path })
-  assert.deepEqual(reopened.get(), { waitTool: false, errorRecovery: true, stopAtDeadline: true, minRoundIntervalMs: 30000, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
+  assert.deepEqual(reopened.get(), { errorRecovery: false, stopAtDeadline: true, minRoundIntervalMs: 30000, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
 })
 
 test('subscribers hear only real changes', () => {
   const store = createSettingsStore({ path: tempPath() })
   const seen = []
   const unsubscribe = store.subscribe((value) => seen.push(value))
-  store.update({ waitTool: true })
+  store.update({ errorRecovery: true })
   store.update({ stopAtDeadline: false })
   unsubscribe()
-  store.update({ waitTool: false })
+  store.update({ errorRecovery: false })
   assert.equal(seen.length, 1)
   assert.equal(seen[0].stopAtDeadline, false)
 })
@@ -148,7 +146,7 @@ test('POST merges the supplied fields', async () => {
     headers: { host: '127.0.0.1:63005', origin: 'http://127.0.0.1:63005' },
   }), response, store)
   assert.equal(response.status, 200)
-  assert.deepEqual(JSON.parse(response.body).value, { waitTool: true, errorRecovery: true, stopAtDeadline: false, minRoundIntervalMs: 0, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
+  assert.deepEqual(JSON.parse(response.body).value, { errorRecovery: true, stopAtDeadline: false, minRoundIntervalMs: 0, questionLimitAlways: false, questionLimitMs: 300000, keepAwake: 'ac-only' })
 })
 
 test('a cross-site write is refused', async () => {
@@ -156,11 +154,11 @@ test('a cross-site write is refused', async () => {
   const response = makeResponse()
   await handleSettingsRequest(makeRequest({
     method: 'POST',
-    body: { waitTool: false },
+    body: { errorRecovery: false },
     headers: { host: '127.0.0.1:63005', origin: 'http://evil.example' },
   }), response, store)
   assert.equal(response.status, 403)
-  assert.equal(store.get().waitTool, true)
+  assert.equal(store.get().errorRecovery, true)
 })
 
 test('a malformed body is refused without changing anything', async () => {

@@ -4,7 +4,6 @@
  * 这些设置与 Cordis config 分开存放：它们改完立即生效，不重载插件行，
  * 正在进行的那次监督不受影响。值存在 $DSH_HOME/storages/dont-stop/settings.json。
  *
- *   waitTool            是否注册 dont_stop_wait（让 agent 声明自己在等外部事情）
  *   errorRecovery       出错后是否按类别等待并恢复（关闭时按普通失败处理）
  *   stopAtDeadline      到点后是否要求任务停止（关闭时只结束监督，不催收尾、不强停）
  *   minRoundIntervalMs  两条监督消息之间的最短间隔
@@ -21,7 +20,6 @@ import { normalizeKeepAwakeMode } from '../power/platform.js'
 import { errorText, logWarn } from '../shared/util.js'
 
 export const DEFAULT_SETTINGS = {
-  waitTool: true,
   errorRecovery: true,
   stopAtDeadline: true,
   minRoundIntervalMs: 0,
@@ -51,14 +49,13 @@ export function defaultSettingsPath() {
 /**
  * 只接受已知字段的合法值：认不出来的退回默认值，两个时长夹在 0 到两小时之间。
  * @param {unknown} raw - 从文件或请求体读到的值。
- * @returns {{waitTool: boolean, errorRecovery: boolean, stopAtDeadline: boolean, minRoundIntervalMs: number, questionLimitAlways: boolean, questionLimitMs: number, keepAwake: 'off'|'ac-only'|'always'}}
+ * @returns {{errorRecovery: boolean, stopAtDeadline: boolean, minRoundIntervalMs: number, questionLimitAlways: boolean, questionLimitMs: number, keepAwake: 'off'|'ac-only'|'always'}}
  */
 export function normalizeSettings(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
   const interval = Number(source.minRoundIntervalMs)
   const questionLimit = Number(source.questionLimitMs)
   return {
-    waitTool: typeof source.waitTool === 'boolean' ? source.waitTool : DEFAULT_SETTINGS.waitTool,
     errorRecovery: typeof source.errorRecovery === 'boolean' ? source.errorRecovery : DEFAULT_SETTINGS.errorRecovery,
     stopAtDeadline: typeof source.stopAtDeadline === 'boolean' ? source.stopAtDeadline : DEFAULT_SETTINGS.stopAtDeadline,
     minRoundIntervalMs: Number.isFinite(interval) && interval > 0
@@ -103,8 +100,7 @@ export function createSettingsStore({ path = defaultSettingsPath(), onError } = 
     /** 合并一部分字段；值真的变了才落盘并通知订阅者。 */
     update(patch) {
       const next = normalizeSettings({ ...value, ...(patch !== null && typeof patch === 'object' ? patch : {}) })
-      const changed = next.waitTool !== value.waitTool
-        || next.errorRecovery !== value.errorRecovery
+      const changed = next.errorRecovery !== value.errorRecovery
         || next.stopAtDeadline !== value.stopAtDeadline
         || next.minRoundIntervalMs !== value.minRoundIntervalMs
         || next.questionLimitAlways !== value.questionLimitAlways

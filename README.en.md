@@ -25,7 +25,7 @@
 
 1. Dont-Stop active
 
-![Dont-Stop status bar](docs/images/dont-stop.png)
+![Dont-Stop status bar](docs/images/dont-stop-en.png)
 
 2. Error recovery
 
@@ -33,7 +33,7 @@
 
 ## Install
 
-- **In DSH**: Settings → Plugins → Add plugin, and enter `dsh-dont-stop`. The same dialog also accepts the GitHub repository (`TCY07/dsh-dont-stop`) or a local directory path.
+- **In DSH**: open the **Plugins** page in the sidebar and choose Add plugin, then enter `dsh-dont-stop`. The same dialog also accepts `github:TCY07/dsh-dont-stop` (or `https://github.com/TCY07/dsh-dont-stop`) and an absolute local directory path.
 - **CLI**: `dsh plugin --profile <profile> add dsh-dont-stop`
 - **Uninstall**: remove it on the plugin page, or `dsh plugin --profile <profile> remove dsh-dont-stop`
 
@@ -71,10 +71,10 @@ These can never be prevented by a plugin, only by a system setting: closing the 
 
 - **Deadline supervision**: set a deadline; finishing early gets the agent nudged to keep iterating until the time is up.
 - **Autonomous progress**: each nudge asks the agent to check what is left, set the next goal itself, and widen or raise the goal when that is the better move — it picks up the next piece of work instead of being sent a bare "continue".
-- **Automatic error recovery**: on rate limits, exhausted quota, request timeouts, server errors and network failures it waits a while and then tries again. (This wraps a second wait around DSH's own retry, so a single hiccup can back off for hours.)
-- **Stop at the deadline**: (opt-in) when the deadline arrives, the agent is asked to wrap up quickly and stop working.
+- **Automatic error recovery**: on rate limits, exhausted quota, request timeouts, server errors and network failures it waits a while and then tries again. (This wraps a second wait around DSH's own retry: one wait can be up to 90 minutes, and repeated failures of the same kind can add up to hours.)
+- **Stop at the deadline**: when the deadline arrives, the agent is asked to wrap up quickly, and everything is force-stopped after a grace period.
 - **Question time limit**: a question that goes unanswered for too long is closed and the agent is asked to decide for itself, so it never sits stuck waiting for a reply.
-- **Keep the system awake**: (opt-in) blocks system sleep while Dont-Stop is active.
+- **Keep the system awake**: blocks system sleep while Dont-Stop is active (optional).
 
 ## Settings
 
@@ -82,15 +82,14 @@ Everything lives on the Dont-Stop page in the DSH settings, and takes effect imm
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Let the agent declare a wait | on | The agent may call a tool to say it is waiting on an external resource; it is not nudged while that wait lasts |
-| Error recovery | on | Resumes work after rate limits, exhausted quota, network and provider errors; also applies outside Dont-Stop sessions |
-| Stop at the deadline | on | At the deadline the agent is told to wrap up and the turn is stopped; off ends supervision only and the task keeps running |
+| Error recovery | on | Retries automatically after rate limits, exhausted quota, network and provider errors; when on, it also applies outside Dont-Stop sessions |
+| Stop at the deadline | on | Wakes the agent at the deadline to wrap up and stops the subagents and background jobs left behind; when off, nothing is force-stopped at the deadline |
 | Prompt interval | 0 s (no limit) | Shortest gap between two Dont-Stop nudges |
 | Always limit question waits | off | Applies the question limit even while Dont-Stop is not active |
 | Question wait limit | 300 s | Longest wait for an answer; after that the question is closed and the agent decides on its own; 0 means no limit |
 | Keep the system awake | on AC power | Blocks system sleep while Dont-Stop is active; choose off / on AC power / always |
 
-![Settings page](docs/images/settings.png)
+![Settings page](docs/images/settings-en.png)
 
 ## Development
 
@@ -100,6 +99,7 @@ npm test
 
 ## Changelog
 
+- **0.2.1**: fixes related to `dont_stop_wait`.
 - **0.2.0**: keeps the system awake while Dont-Stop is active (mechanism picked per platform, no admin rights).
 - **0.1.0**: first release.
 
