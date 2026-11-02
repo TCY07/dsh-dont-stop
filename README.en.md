@@ -33,6 +33,7 @@
 
 ## Install
 
+- **From the plugin market**: search for `Dont-Stop` or `dsh-dont-stop` in the DSH plugin market (`dsh-market`) and install it in one click (from dsh 0.2.1 the market sits on the Plugins page; older hosts open it from Settings → Plugin market). Catalog page: [awesome-dsh-plugin.com/p/TCY07/dsh-dont-stop](https://awesome-dsh-plugin.com/p/TCY07/dsh-dont-stop/)
 - **In DSH**: open the **Plugins** page in the sidebar and choose Add plugin, then enter `dsh-dont-stop`. The same dialog also accepts `github:TCY07/dsh-dont-stop` (or `https://github.com/TCY07/dsh-dont-stop`) and an absolute local directory path.
 - **CLI**: `dsh plugin --profile <profile> add dsh-dont-stop`
 - **Uninstall**: remove it on the plugin page, or `dsh plugin --profile <profile> remove dsh-dont-stop`

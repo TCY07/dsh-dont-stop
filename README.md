@@ -33,6 +33,7 @@
 
 ## 安装
 
+- **在插件市场里装**：在 DSH 的插件市场（`dsh-market`）里搜 `Dont-Stop` 或 `dsh-dont-stop`，点一下装好（dsh 0.2.1 起市场就在「插件」页里，更早的宿主从 设置 → 插件市场 进入）。目录页：[awesome-dsh-plugin.com/p/TCY07/dsh-dont-stop](https://awesome-dsh-plugin.com/p/TCY07/dsh-dont-stop/)
 - **在 DSH 里装**：打开侧边栏的「插件」页 → 添加插件，填 `dsh-dont-stop`。同一个入口也接受 `github:TCY07/dsh-dont-stop`（或 `https://github.com/TCY07/dsh-dont-stop`）和本地绝对目录路径。
 - **命令行**：`dsh plugin --profile <profile> add dsh-dont-stop`
 - **卸载**：在插件页移除，或 `dsh plugin --profile <profile> remove dsh-dont-stop`
